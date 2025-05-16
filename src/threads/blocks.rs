@@ -13,8 +13,10 @@ use std::{
 };
 
 pub(crate) async fn blocks_infallible(shared_state: Arc<State>, client: Client) {
-    if let Err(e) = index(shared_state, client).await {
-        log::error!("{:?}", e);
+    loop {
+        if let Err(e) = index(shared_state.clone(), client.clone()).await {
+            log::error!("{:?}", e);
+        }
     }
 }
 
@@ -47,12 +49,12 @@ pub async fn index(state: Arc<State>, client: Client) -> Result<(), Error> {
                     continue;
                 }
                 let script_hash = db.hash(&output.script_pubkey);
-                log::debug!("{} hash is {script_hash}", &output.script_pubkey.to_hex());
+                log::trace!("{} hash is {script_hash}", &output.script_pubkey.to_hex());
                 let el = history_map.entry(script_hash).or_insert(vec![]);
                 el.push(TxSeen::new(txid, block_height));
 
                 let out_point = OutPoint::new(txid, j as u32);
-                log::debug!("inserting {out_point}");
+                log::trace!("inserting {out_point}");
                 utxo_created.insert(out_point, script_hash);
             }
 
@@ -63,7 +65,7 @@ pub async fn index(state: Arc<State>, client: Client) -> Result<(), Error> {
                     }
                     match utxo_created.remove(&input.previous_output) {
                         Some(script_hash) => {
-                            log::debug!("spent same block, avoiding {}", &input.previous_output);
+                            log::trace!("spent same block, avoiding {}", &input.previous_output);
                             // spent in the same block:
                             // - no need to remove from the persisted utxo
                             // - this height already inserted for this script from the relative same-height output
@@ -72,7 +74,7 @@ pub async fn index(state: Arc<State>, client: Client) -> Result<(), Error> {
                             el.push(TxSeen::new(txid, block_height));
                         }
                         None => {
-                            log::debug!("removing {}", &input.previous_output);
+                            log::trace!("removing {}", &input.previous_output);
                             if !skip_outpoint.contains(&input.previous_output) {
                                 utxo_spent.push((input.previous_output, txid))
                             }
@@ -83,9 +85,10 @@ pub async fn index(state: Arc<State>, client: Client) -> Result<(), Error> {
         }
 
         let meta = BlockMeta::new(block_height, block.block_hash(), block.header.time);
-        state.set_hash_ts(&meta).await;
         db.update(&meta, utxo_spent, history_map, utxo_created)
+            .inspect_err(|e| log::error!("Error updating store: {e:?}"))
             .map_err(|_| Error::Other)?; // TODO
+        state.set_hash_ts(&meta).await;
     }
     Ok(())
 }
