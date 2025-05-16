@@ -9,13 +9,28 @@ use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
+use tokio::{sync::watch::Receiver, time::sleep};
 
-pub(crate) async fn blocks_infallible(shared_state: Arc<State>, client: Client) {
+pub(crate) async fn blocks_infallible(
+    shared_state: Arc<State>,
+    client: Client,
+    shutdown_signal: Receiver<()>,
+) {
     loop {
-        if let Err(e) = index(shared_state.clone(), client.clone()).await {
-            log::error!("{:?}", e);
+        let mut signal = shutdown_signal.clone();
+        tokio::select! {
+            _ = signal.changed() => {
+                log::info!("Shutdown signal received, exiting blocks thread");
+                return;
+            }
+            res = index(shared_state.clone(), client.clone()) => {
+                if let Err(e) = res {
+                    log::error!("Error indexing blocks: {:?}", e);
+                    sleep(Duration::from_secs(10)).await
+                }
+            }
         }
     }
 }
