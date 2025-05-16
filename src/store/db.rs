@@ -251,8 +251,7 @@ impl DBStore {
             batch.delete_cf(&cf, &key_buf);
         }
 
-        self.write(batch)?;
-
+        self.write(batch).context("Error writing to db")?;
         Ok(result)
     }
 
@@ -323,7 +322,7 @@ impl DBStore {
                 );
             }
         }
-        self.write(batch)?;
+        self.write(batch).context("Error writing to db")?;
         Ok(())
     }
 

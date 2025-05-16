@@ -5,6 +5,7 @@ use crate::{
     store::{BlockMeta, Store},
     TxSeen, V,
 };
+use bitcoin::hex::DisplayHex;
 use elements::{OutPoint, Txid};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -201,11 +202,15 @@ pub async fn index(
                     continue;
                 }
                 let script_hash = db.hash(output.script_pubkey_bytes());
+                log::trace!(
+                    "{} hash is {script_hash}",
+                    &output.script_pubkey_bytes().to_lower_hex_string()
+                );
                 let el = history_map.entry(script_hash).or_insert(vec![]);
                 el.push(TxSeen::new(txid, block_to_index.height, V::Vout(j as u32)));
 
                 let out_point = OutPoint::new(txid.elements(), j as u32);
-                log::debug!("inserting {out_point}");
+                log::trace!("inserting {out_point}");
                 utxo_created.insert(out_point, script_hash);
             }
 
@@ -218,6 +223,7 @@ pub async fn index(
                     match utxo_created.remove(&previous_output) {
                         Some(script_hash) => {
                             // also the spending tx must be indexed
+                            log::trace!("spent same block, avoiding {}", &previous_output);
                             let el = history_map.entry(script_hash).or_insert(vec![]);
                             el.push(TxSeen::new(txid, block_to_index.height, V::Vin(vin as u32)));
                         }

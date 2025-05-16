@@ -42,6 +42,7 @@ impl std::fmt::Display for Error {
     }
 }
 
+#[derive(Clone)]
 pub struct Client {
     client: reqwest::Client,
     use_esplora: bool,
