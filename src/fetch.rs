@@ -92,7 +92,7 @@ impl Client {
         } else if response.status() == 404 || response.status() == 429 {
             Ok(None)
         } else {
-            panic!("{url} return unexpected status {status} for block_hash");
+            Err(format!("{url} return unexpected status {status} for block_hash").into())
         }
     }
 
