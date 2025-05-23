@@ -89,10 +89,10 @@ impl Client {
             Ok(Some(BlockHash::from_str(hex).with_context(|| {
                 format!("failing converting {hex} to BlockHash")
             })?))
-        } else if response.status() == 404 {
+        } else if response.status() == 404 || response.status() == 429 {
             Ok(None)
         } else {
-            panic!("{url} return unexpected status {status} for block_hash");
+            Err(format!("{url} return unexpected status {status} for block_hash").into())
         }
     }
 
