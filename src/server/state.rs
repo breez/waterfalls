@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use crate::{
     server::{derivation_cache::DerivationCache, Mempool},
@@ -19,7 +20,7 @@ pub struct State {
     /// The private key of the server address used to sign responses
     pub wif_key: PrivateKey,
 
-    pub store: AnyStore,
+    pub store: Arc<AnyStore>,
     pub mempool: Mutex<Mempool>,
     pub blocks_hash_ts: Mutex<Vec<(BlockHash, Timestamp)>>, // TODO should be moved into the Store, but in memory for db
 
@@ -44,7 +45,7 @@ impl State {
         Ok(State {
             key,
             wif_key,
-            store,
+            store: Arc::new(store),
             mempool: Mutex::new(Mempool::new()),
             blocks_hash_ts: Mutex::new(Vec::new()),
             secp: bitcoin::key::Secp256k1::new(),

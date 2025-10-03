@@ -23,7 +23,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::spawn_blocking};
 
 use super::{encryption, sign::MsgSigAddress, Network};
 
@@ -716,11 +716,15 @@ fn filter_utxo_only(result: &mut [Vec<TxSeen>], db: &crate::store::AnyStore) -> 
 
 async fn find_scripts(
     state: &Arc<State>,
-    db: &crate::store::AnyStore,
+    db: &Arc<crate::store::AnyStore>,
     result: &mut Vec<Vec<TxSeen>>,
     scripts: Vec<u64>,
 ) -> bool {
-    let mut seen_blockchain = db.get_history(&scripts).unwrap();
+    let scripts_clone = scripts.clone();
+    let db_clone = db.clone();
+    let mut seen_blockchain = spawn_blocking(move || db_clone.get_history(&scripts_clone).unwrap())
+        .await
+        .unwrap();
     let seen_mempool = state.mempool.lock().await.seen(&scripts);
 
     for (conf, unconf) in seen_blockchain.iter_mut().zip(seen_mempool.iter()) {
