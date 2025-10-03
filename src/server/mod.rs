@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use crate::fetch::Client;
 use crate::server::preload::headers;
@@ -36,7 +37,6 @@ pub enum Network {
     LiquidTestnet,
     ElementsRegtest,
 }
-
 #[derive(clap::Parser, Clone, Default)]
 #[command(author, version, about, long_about = None)]
 pub struct Arguments {
@@ -273,23 +273,24 @@ pub async fn inner_main(
     let listener = TcpListener::bind(addr).await?;
     let client = Client::new(&args);
     let client = Arc::new(Mutex::new(client));
-
     loop {
         let mut signal = shutdown_signal.clone();
 
         tokio::select! {
             Ok( (stream, _)) = listener.accept() => {
+                let request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
                 let io = TokioIo::new(stream);
                 let state = state.clone();
                 let client = client.clone();
-
+                log::debug!("Accepted connection, spawning task to handle it, request_id={request_id}");
                 tokio::task::spawn(async move {
                     let state = &state;
                     let network = args.network;
                     let add_cors = args.add_cors;
                     let client = &client;
 
-                    let service = service_fn(move |req| infallible_route(state, client, req, network, add_cors));
+                    log::debug!("Inside spawened task for request_id={request_id}");
+                    let service = service_fn(move |req| infallible_route(state, client, req, network, add_cors, request_id));
 
                     if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                         log::error!("Error serving connection: {:?}", err);
