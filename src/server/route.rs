@@ -54,17 +54,21 @@ pub async fn route(
     client: &Arc<Mutex<Client>>,
     req: Request<Incoming>,
     network: Network,
+    request_id: u128,
 ) -> Result<Response<Full<Bytes>>, Error> {
     let is_testnet_or_regtest = !matches!(network, Network::Liquid | Network::Bitcoin);
-    log::debug!("---> {req:?}");
+    log::debug!("---> {req:?}, request_id={request_id}");
     let res = match (req.method(), req.uri().path(), req.uri().query()) {
         (&Method::GET, "/v1/server_recipient", None) => {
+            log::debug!("Handling /v1/server_recipient, request_id={request_id}");
             str_resp(state.key.to_public().to_string(), StatusCode::OK)
         }
         (&Method::GET, "/v1/server_address", None) => {
+            log::debug!("Handling /v1/server_address, request_id={request_id}");
             str_resp(state.address().to_string(), StatusCode::OK)
         }
         (&Method::GET, "/v1/waterfalls", Some(query)) => {
+            log::debug!("Handling /v1/waterfalls, request_id={request_id}");
             let inputs = parse_query(
                 query,
                 &state.key,
@@ -75,6 +79,7 @@ pub async fn route(
             handle_waterfalls_req(state, inputs, WithTip::No, false).await
         }
         (&Method::GET, "/v2/waterfalls", Some(query)) => {
+            log::debug!("Handling /v2/waterfalls, request_id={request_id}");
             let inputs = parse_query(
                 query,
                 &state.key,
@@ -88,6 +93,7 @@ pub async fn route(
             str_resp("v3 endpoint removed".to_string(), StatusCode::NOT_FOUND)
         }
         (&Method::GET, "/v1/waterfalls.cbor", Some(query)) => {
+            log::debug!("Handling /v1/waterfalls.cbor, request_id={request_id}");
             let inputs = parse_query(
                 query,
                 &state.key,
@@ -98,6 +104,7 @@ pub async fn route(
             handle_waterfalls_req(state, inputs, WithTip::No, true).await
         }
         (&Method::GET, "/v2/waterfalls.cbor", Some(query)) => {
+            log::debug!("Handling /v2/waterfalls.cbor, request_id={request_id}");
             let inputs = parse_query(
                 query,
                 &state.key,
@@ -111,6 +118,7 @@ pub async fn route(
             str_resp("v3 endpoint removed".to_string(), StatusCode::NOT_FOUND)
         }
         (&Method::GET, "/v4/waterfalls", Some(query)) => {
+            log::debug!("Handling /v4/waterfalls, request_id={request_id}");
             let inputs = parse_query(
                 query,
                 &state.key,
@@ -121,6 +129,7 @@ pub async fn route(
             handle_waterfalls_req(state, inputs, WithTip::All, false).await
         }
         (&Method::GET, "/v4/waterfalls.cbor", Some(query)) => {
+            log::debug!("Handling /v4/waterfalls.cbor, request_id={request_id}");
             let inputs = parse_query(
                 query,
                 &state.key,
@@ -177,10 +186,12 @@ pub async fn route(
             )
         }
         (&Method::GET, "/blocks/tip/hash", None) => {
+            log::debug!("Handling /blocks/tip/hash, request_id={request_id}");
             let block_hash = state.tip_hash().await;
             block_hash_resp(block_hash)
         }
         (&Method::POST, "/tx", None) => {
+            log::debug!("Handling /tx, request_id={request_id}");
             let whole_body = req
                 .collect()
                 .await
@@ -201,6 +212,7 @@ pub async fn route(
             }
         }
         (&Method::GET, "/metrics", None) => {
+            log::debug!("Handling /metrics, request_id={request_id}");
             let encoder = prometheus::TextEncoder::new();
 
             let metric_families = prometheus::gather();
@@ -217,6 +229,7 @@ pub async fn route(
             )
         }
         (&Method::GET, path, None) => {
+            log::debug!("Handling unknown path {path}, request_id={request_id}");
             let mut s = path.split('/');
             match (s.next(), s.next(), s.next(), s.next(), s.next()) {
                 (Some(""), Some("block-height"), Some(v), None, None) => {
@@ -517,7 +530,9 @@ async fn handle_waterfalls_req(
     inputs: WaterfallRequest,
     with_tip: WithTip,
     cbor: bool,
+    request_id: u128,
 ) -> Result<Response<Full<Bytes>>, Error> {
+    log::debug!("handle_waterfalls_req, request_id={request_id}");
     let db = &state.store;
     let start = Instant::now();
     let page = inputs.page();
@@ -573,7 +588,9 @@ async fn handle_waterfalls_req(
                         }
                     }
 
+                    log::debug!("handle_waterfalls_req - descriptor, before find_scripts request_id={request_id}");
                     let is_last = find_scripts(state, db, &mut result, scripts).await;
+                    log::debug!("handle_waterfalls_req - descriptor, after find_scripts request_id={request_id}");
 
                     if (is_last && start + GAP_LIMIT >= to_index) || is_single_address {
                         break;
@@ -597,7 +614,13 @@ async fn handle_waterfalls_req(
                 scripts.push(db.hash(addr.script_pubkey().as_bytes()));
             }
             let mut result = Vec::with_capacity(addresses.len());
+            log::debug!(
+                "handle_waterfalls_req - addresses, before find_scripts request_id={request_id}"
+            );
             let _ = find_scripts(state, db, &mut result, scripts).await;
+            log::debug!(
+                "handle_waterfalls_req - addresses, after find_scripts request_id={request_id}"
+            );
             if utxo_only {
                 filter_utxo_only(&mut result, db)?;
             }
@@ -665,7 +688,7 @@ async fn handle_waterfalls_req(
     let m = m.to_msg_sig_address(state.address());
 
     log::info!(
-        "{id:x}: {elements} elements, elapsed: {:.2?} ({:.2?} derivations)",
+        "{id:x}: {elements} elements, elapsed: {:.2?} ({:.2?} derivations), request_id={request_id}",
         start.elapsed(),
         derivations_duration
     );
@@ -755,8 +778,10 @@ pub async fn infallible_route(
     req: Request<Incoming>,
     network: Network,
     add_cors: bool,
+    request_id: u128,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    let mut response = match route(state, client, req, network).await {
+    log::debug!("infallible_route request_id={}", request_id);
+    let mut response = match route(state, client, req, network, request_id).await {
         Ok(r) => r,
         Err(e) => {
             if matches!(e, Error::CannotDecrypt) {
