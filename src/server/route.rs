@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::spawn_blocking};
 
 use super::{encryption, sign::MsgSigAddress, Network};
 
@@ -44,15 +44,18 @@ pub async fn route(
     client: &Arc<Mutex<Client>>,
     req: Request<Incoming>,
     network: Network,
+    request_id: u128,
 ) -> Result<Response<Full<Bytes>>, Error> {
     let is_testnet_or_regtest =
         network == Network::LiquidTestnet || network == Network::ElementsRegtest;
-    log::debug!("---> {req:?}");
+    log::debug!("---> {req:?}, request_id={request_id}");
     let res = match (req.method(), req.uri().path(), req.uri().query()) {
         (&Method::GET, "/v1/server_recipient", None) => {
+            log::debug!("Handling /v1/server_recipient, request_id={request_id}");
             str_resp(state.key.to_public().to_string(), StatusCode::OK)
         }
         (&Method::GET, "/v1/server_address", None) => {
+            log::debug!("Handling /v1/server_address, request_id={request_id}");
             str_resp(state.address().to_string(), StatusCode::OK)
         }
         (&Method::GET, "/v1/waterfalls", Some(query)) => {
@@ -62,7 +65,8 @@ pub async fn route(
                 is_testnet_or_regtest,
                 state.max_addresses,
             )?;
-            handle_waterfalls_req(state, inputs, false, false, false).await
+            log::debug!("Handling /v1/waterfalls, request_id={request_id}");
+            handle_waterfalls_req(state, inputs, false, false, false, request_id).await
         }
         (&Method::GET, "/v2/waterfalls", Some(query)) => {
             let inputs = parse_query(
@@ -71,7 +75,8 @@ pub async fn route(
                 is_testnet_or_regtest,
                 state.max_addresses,
             )?;
-            handle_waterfalls_req(state, inputs, true, false, false).await
+            log::debug!("Handling /v2/waterfalls, request_id={request_id}");
+            handle_waterfalls_req(state, inputs, true, false, false, request_id).await
         }
         (&Method::GET, "/v3/waterfalls", Some(query)) => {
             let inputs = parse_query(
@@ -80,7 +85,8 @@ pub async fn route(
                 is_testnet_or_regtest,
                 state.max_addresses,
             )?;
-            handle_waterfalls_req(state, inputs, true, true, false).await
+            log::debug!("Handling /v3/waterfalls, request_id={request_id}");
+            handle_waterfalls_req(state, inputs, true, true, false, request_id).await
         }
         (&Method::GET, "/v1/waterfalls.cbor", Some(query)) => {
             let inputs = parse_query(
@@ -89,7 +95,8 @@ pub async fn route(
                 is_testnet_or_regtest,
                 state.max_addresses,
             )?;
-            handle_waterfalls_req(state, inputs, false, false, true).await
+            log::debug!("Handling /v1/waterfalls.cbor, request_id={request_id}");
+            handle_waterfalls_req(state, inputs, false, false, true, request_id).await
         }
         (&Method::GET, "/v2/waterfalls.cbor", Some(query)) => {
             let inputs = parse_query(
@@ -98,7 +105,8 @@ pub async fn route(
                 is_testnet_or_regtest,
                 state.max_addresses,
             )?;
-            handle_waterfalls_req(state, inputs, true, false, true).await
+            log::debug!("Handling /v2/waterfalls.cbor, request_id={request_id}");
+            handle_waterfalls_req(state, inputs, true, false, true, request_id).await
         }
         (&Method::GET, "/v3/waterfalls.cbor", Some(query)) => {
             let inputs = parse_query(
@@ -107,9 +115,11 @@ pub async fn route(
                 is_testnet_or_regtest,
                 state.max_addresses,
             )?;
-            handle_waterfalls_req(state, inputs, true, true, true).await
+            log::debug!("Handling /v3/waterfalls.cbor, request_id={request_id}");
+            handle_waterfalls_req(state, inputs, true, true, true, request_id).await
         }
         (&Method::GET, "/v1/time_since_last_block", None) => {
+            log::debug!("Handling /v1/time_since_last_block, request_id={request_id}");
             let ts = state.tip_timestamp().await;
             let s = match ts {
                 Some(ts) => {
@@ -128,10 +138,12 @@ pub async fn route(
             str_resp(s.to_string(), StatusCode::OK)
         }
         (&Method::GET, "/blocks/tip/hash", None) => {
+            log::debug!("Handling /blocks/tip/hash, request_id={request_id}");
             let block_hash = state.tip_hash().await;
             block_hash_resp(block_hash)
         }
         (&Method::POST, "/tx", None) => {
+            log::debug!("Handling /tx, request_id={request_id}");
             let whole_body = req
                 .collect()
                 .await
@@ -153,6 +165,7 @@ pub async fn route(
             }
         }
         (&Method::GET, "/metrics", None) => {
+            log::debug!("Handling /metrics, request_id={request_id}");
             let encoder = prometheus::TextEncoder::new();
 
             let metric_families = prometheus::gather();
@@ -163,6 +176,7 @@ pub async fn route(
             any_resp(buffer, StatusCode::OK, Some("text/plain"), Some(5), None)
         }
         (&Method::GET, path, None) => {
+            log::debug!("Handling unknown path {path}, request_id={request_id}");
             let mut s = path.split('/');
             match (s.next(), s.next(), s.next(), s.next(), s.next()) {
                 (Some(""), Some("block-height"), Some(v), None, None) => {
@@ -221,7 +235,7 @@ pub async fn route(
 
         _ => str_resp("endpoint not found".to_string(), StatusCode::NOT_FOUND),
     };
-    log::debug!("<--- {res:?}");
+    log::debug!("<--- {res:?}, request_id={request_id}");
     res
 }
 
@@ -412,7 +426,9 @@ async fn handle_waterfalls_req(
     with_tip: bool,
     v3: bool,
     cbor: bool,
+    request_id: u128,
 ) -> Result<Response<Full<Bytes>>, Error> {
+    log::debug!("handle_waterfalls_req, request_id={request_id}");
     let db = &state.store;
     let start = Instant::now();
     let page = inputs.page();
@@ -439,11 +455,12 @@ async fn handle_waterfalls_req(
                     for index in start..start + GAP_LIMIT {
                         let l = desc.at_derivation_index(index).unwrap();
                         let script_pubkey = l.script_pubkey();
-                        log::debug!("{}/{} {}", desc, index, script_pubkey);
+                        // log::debug!("{}/{} {}", desc, index, script_pubkey);
                         scripts.push(db.hash(&script_pubkey));
                     }
+                    log::debug!("handle_waterfalls_req - descriptor, before find_scripts request_id={request_id}");
                     let is_last = find_scripts(state, db, &mut result, scripts).await;
-
+                    log::debug!("handle_waterfalls_req - descriptor, after find_scripts request_id={request_id}");
                     if is_last && start + GAP_LIMIT >= to_index {
                         break;
                     }
@@ -457,7 +474,9 @@ async fn handle_waterfalls_req(
                 scripts.push(db.hash(&addr.script_pubkey()));
             }
             let mut result = Vec::with_capacity(addresses.len());
+            log::debug!("handle_waterfalls_req - addresses, before find_scripts request_id={request_id}");
             let _ = find_scripts(state, db, &mut result, scripts).await;
+            log::debug!("handle_waterfalls_req - addresses, after find_scripts request_id={request_id}");
             map.insert("addresses".to_string(), result);
         }
     };
@@ -521,7 +540,7 @@ async fn handle_waterfalls_req(
     };
 
     log::info!(
-        "returning: {elements} elements, elapsed: {}ms",
+        "returning: {elements} elements, elapsed: {}ms, request_id={request_id}",
         start.elapsed().as_millis()
     );
     crate::WATERFALLS_COUNTER.inc();
@@ -540,11 +559,15 @@ async fn handle_waterfalls_req(
 
 async fn find_scripts(
     state: &Arc<State>,
-    db: &crate::store::AnyStore,
+    db: &Arc<crate::store::AnyStore>,
     result: &mut Vec<Vec<TxSeen>>,
     scripts: Vec<u64>,
 ) -> bool {
-    let mut seen_blockchain = db.get_history(&scripts).unwrap();
+    let scripts_clone = scripts.clone();
+    let db_clone = db.clone();
+    let mut seen_blockchain = spawn_blocking(move || db_clone.get_history(&scripts_clone).unwrap())
+        .await
+        .unwrap();
     let seen_mempool = state.mempool.lock().await.seen(&scripts);
 
     for (conf, unconf) in seen_blockchain.iter_mut().zip(seen_mempool.iter()) {
@@ -565,8 +588,10 @@ pub async fn infallible_route(
     req: Request<Incoming>,
     network: Network,
     add_cors: bool,
+    request_id: u128,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    let mut response = match route(state, client, req, network).await {
+    log::debug!("infallible_route request_id={}", request_id);
+    let mut response = match route(state, client, req, network, request_id).await {
         Ok(r) => r,
         Err(e) => Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
